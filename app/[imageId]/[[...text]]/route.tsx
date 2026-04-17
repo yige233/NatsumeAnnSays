@@ -68,7 +68,7 @@ function getLayout(text: string, maxWidth: number, maxHeight: number, manualFs?:
 
 // --- 主 API 函数 ---
 
-export async function GET(request: NextRequest, context: { params: Promise<{ imageId: string; text: string[] }> }) {
+export async function GET(request: NextRequest, context: { params: Promise<{ imageId: string; text?: string[] }> }) {
   try {
     const url = new URL(request.url);
     const segments = url.pathname.split("/").filter(Boolean);
