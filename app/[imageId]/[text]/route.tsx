@@ -110,7 +110,10 @@ export async function GET(
 ) {
     try {
         const { imageId, text: encodedText } = await context.params;
-        const rawText = decodeURIComponent(encodedText);
+        const rawText = decodeURIComponent(encodedText).replace(
+            /\||\/n/g,
+            "\n",
+        );
         const { searchParams } = new URL(request.url);
 
         const template = TEMPLATES[imageId];
@@ -198,7 +201,18 @@ export async function GET(
                         wordBreak: "break-all",
                     }}
                 >
-                    {text}
+                    {text.split("\n").map((line, index) => (
+                        <div
+                            key={index}
+                            style={{
+                                display: "flex",
+                                textAlign: alignMap[align].textAlign,
+                                wordBreak: "break-all",
+                            }}
+                        >
+                            {line}
+                        </div>
+                    ))}
                 </div>
             </div>,
             {
