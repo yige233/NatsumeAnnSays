@@ -1,76 +1,43 @@
 import { ImageResponse } from "@vercel/og";
+import { NextRequest } from "next/server";
 
 export const runtime = "edge";
 
-const MIN_FONT_SIZE = 8;
-const MAX_FONT_SIZE = 30;
-const LINE_HEIGHT = 1.2; // 预估行高倍数
-
-const IMAGES_CONFIG: Record<
+// 1. 模板配置
+const TEMPLATES: Record<
     string,
-    { x: number; y: number; w: number; h: number; filename: string }
+    {
+        filename: string;
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        defaultAlign?: "left" | "center" | "right";
+        defaultColor?: string;
+        maxFs: number;
+        minFs: number;
+    }
 > = {
-    NatsumeAnn: { x: 120, y: 290, w: 160, h: 100, filename: "NatsumeAnn.png" },
+    NatsumeAnn: {
+        filename: "NatsumeAnn.png",
+        x: 120,
+        y: 290,
+        w: 160,
+        h: 100,
+        defaultAlign: "center",
+        defaultColor: "000000",
+        maxFs: 30,
+        minFs: 8,
+    },
 };
 
 // --- 工具函数 ---
 
-// 1. 获取字符加权长度 (中文1, 英文0.6)
-function getWeightedLength(text: string) {
-    return text
-        .split("")
-        .reduce((acc, c) => acc + (c.charCodeAt(0) > 128 ? 1 : 0.6), 0);
-}
-
-// 2. 检查在特定字号下是否溢出区域
-function doesItFit(
-    text: string,
-    fontSize: number,
-    maxWidth: number,
-    maxHeight: number,
-) {
-    const wLen = getWeightedLength(text);
-    const totalWidth = wLen * fontSize;
-    const lines = Math.ceil(totalWidth / maxWidth);
-    const totalHeight = lines * fontSize * LINE_HEIGHT;
-    return totalHeight <= maxHeight;
-}
-
-// 3. 核心算法：计算最优布局
-function getLayout(text: string, maxWidth: number, maxHeight: number) {
-    let fontSize = MAX_FONT_SIZE;
-    let currentText = text;
-
-    // 第一步：尝试通过减小字号来适配全文
-    while (fontSize > MIN_FONT_SIZE) {
-        if (doesItFit(currentText, fontSize, maxWidth, maxHeight)) {
-            return { fontSize, text: currentText };
-        }
-        fontSize -= 2;
-    }
-
-    // 第二步：如果字号到了最小值(8px)还放不下，开始截断文字
-    fontSize = MIN_FONT_SIZE;
-    while (currentText.length > 0) {
-        // 如果加上 "..." 后能放下，则返回
-        const displayText = currentText + "...";
-        if (doesItFit(displayText, fontSize, maxWidth, maxHeight)) {
-            return { fontSize, text: displayText };
-        }
-        // 否则删掉最后一个字符继续试
-        currentText = currentText.slice(0, -1);
-    }
-
-    return { fontSize: MIN_FONT_SIZE, text: "..." };
-}
-
-// 4. 解析 PNG 尺寸
 function getPngSize(buffer: ArrayBuffer) {
     const view = new DataView(buffer);
     return { width: view.getInt32(16), height: view.getInt32(20) };
 }
 
-// 5. ArrayBuffer 转 Data URI
 function bufferToDataUri(buffer: ArrayBuffer, type: string) {
     const base = btoa(
         new Uint8Array(buffer).reduce((d, b) => d + String.fromCharCode(b), ""),
@@ -78,39 +45,123 @@ function bufferToDataUri(buffer: ArrayBuffer, type: string) {
     return `data:${type};base64,${base}`;
 }
 
+/**
+ * 核心布局算法：修正了变量名错误
+ */
+function getLayout(
+    text: string,
+    maxWidth: number,
+    maxHeight: number,
+    manualFs?: number,
+    config?: { max: number; min: number },
+) {
+    const maxFs = config?.max || 30;
+    const minFs = config?.min || 8;
+    const lineHeight = 1.2;
+
+    // 计算加权宽度
+    const getW = (t: string) =>
+        t.split("").reduce((a, c) => a + (c.charCodeAt(0) > 128 ? 1 : 0.6), 0);
+
+    // 检查是否溢出
+    const checkFit = (str: string, size: number) => {
+        const lines = Math.ceil((getW(str) * size) / (maxWidth - 4));
+        return lines * size * lineHeight <= maxHeight;
+    };
+
+    let targetFs: number;
+
+    if (manualFs) {
+        targetFs = Math.max(manualFs, minFs);
+    } else {
+        targetFs = maxFs;
+        // 自动缩放阶段
+        while (targetFs > minFs) {
+            if (checkFit(text, targetFs)) return { fontSize: targetFs, text };
+            targetFs -= 2;
+        }
+    }
+
+    // 截断阶段 (当 targetFs 已经降到最低或者为手动指定值时)
+    let currentText = text;
+
+    // 如果当前文本在 targetFs 下能放下，直接返回
+    if (checkFit(currentText, targetFs)) {
+        return { fontSize: targetFs, text: currentText };
+    }
+
+    // 否则，循环删字直到能放下 (末尾补 ...)
+    while (currentText.length > 0) {
+        const displayText = currentText + "...";
+        if (checkFit(displayText, targetFs)) {
+            return { fontSize: targetFs, text: displayText };
+        }
+        currentText = currentText.slice(0, -1);
+    }
+
+    return { fontSize: targetFs, text: "..." };
+}
+
 // --- 主 API 函数 ---
 
 export async function GET(
-    request: Request,
-    { params }: { params: Promise<{ imageId: string; text: string }> },
+    request: NextRequest,
+    context: { params: Promise<{ imageId: string; text: string }> },
 ) {
     try {
-        const { imageId, text: rawText } = await params;
-        const decodedText = decodeURIComponent(rawText);
-        const config = IMAGES_CONFIG[imageId];
-
-        if (!config) return new Response(`Config not found. Available: ${[...Object.keys(IMAGES_CONFIG)].join(",")}`, { status: 404 });
-
+        const { imageId, text: encodedText } = await context.params;
+        const rawText = decodeURIComponent(encodedText);
         const { searchParams } = new URL(request.url);
-        const color = (searchParams.get("c") || "000000").replace("#", "");
 
-        // 加载字体和底图
-        const domain = new URL(request.url).origin; // 自动获取当前部署的域名
+        const template = TEMPLATES[imageId];
+        if (!template)
+            return new Response(
+                `Template Not Found. Available: ${[...Object.keys(TEMPLATES)].join(",")}`,
+                { status: 404 },
+            );
 
+        const color = (
+            searchParams.get("c") ||
+            template.defaultColor ||
+            "000000"
+        ).replace("#", "");
+        const align = (searchParams.get("al") ||
+            template.defaultAlign ||
+            "center") as "left" | "center" | "right";
+        const manualFs = searchParams.get("fs")
+            ? parseInt(searchParams.get("fs")!)
+            : undefined;
+
+        const alignMap = {
+            left: { alignItems: "flex-start", textAlign: "left" as const },
+            center: { alignItems: "center", textAlign: "center" as const },
+            right: { alignItems: "flex-end", textAlign: "right" as const },
+        };
+
+        const domain = new URL(request.url).origin;
+
+        // 从 public 目录并行加载资源
         const [fontData, imageData] = await Promise.all([
             fetch(`${domain}/NotoSansSC-SemiBold.ttf`).then((res) =>
                 res.arrayBuffer(),
             ),
-            fetch(`${domain}/${config.filename}`).then((res) =>
+            fetch(`${domain}/${template.filename}`).then((res) =>
                 res.arrayBuffer(),
             ),
         ]);
 
         const { width, height } = getPngSize(imageData);
-        const imageBase64 = bufferToDataUri(imageData, "image/png");
 
-        // 计算布局：自动字号 + 溢出截断
-        const { fontSize, text } = getLayout(decodedText, config.w, config.h);
+        // 计算布局
+        const { fontSize, text } = getLayout(
+            rawText,
+            template.w,
+            template.h,
+            manualFs,
+            { max: template.maxFs, min: template.minFs },
+        );
+
+        const imageBase64 = bufferToDataUri(imageData, "image/png");
 
         return new ImageResponse(
             <div
@@ -121,30 +172,27 @@ export async function GET(
                     position: "relative",
                 }}
             >
-                {/* 底图层 */}
                 <img
                     src={imageBase64}
                     width={width}
                     height={height}
                     style={{ position: "absolute", top: 0, left: 0 }}
                 />
-
-                {/* 文字层 */}
                 <div
                     style={{
                         position: "absolute",
-                        left: `${config.x}px`,
-                        top: `${config.y}px`,
-                        width: `${config.w}px`,
-                        height: `${config.h}px`,
+                        left: `${template.x}px`,
+                        top: `${template.y}px`,
+                        width: `${template.w}px`,
+                        height: `${template.h}px`,
                         display: "flex",
                         flexDirection: "column",
-                        justifyContent: "flex-start", // 顶部
-                        alignItems: "center", // 居中
-                        textAlign: "center",
+                        justifyContent: "flex-start",
+                        alignItems: alignMap[align].alignItems,
+                        textAlign: alignMap[align].textAlign,
                         fontSize: `${fontSize}px`,
                         color: `#${color}`,
-                        lineHeight: LINE_HEIGHT,
+                        lineHeight: 1.2,
                         fontWeight: 700,
                         overflow: "hidden",
                         wordBreak: "break-all",
@@ -154,12 +202,13 @@ export async function GET(
                 </div>
             </div>,
             {
-                width: width,
-                height: height,
+                width,
+                height,
                 fonts: [{ name: "NotoSans", data: fontData, style: "normal" }],
             },
         );
     } catch (e) {
+        console.error(e);
         return new Response("Render Error", { status: 500 });
     }
 }
