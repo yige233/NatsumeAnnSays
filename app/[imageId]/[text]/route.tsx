@@ -82,7 +82,7 @@ function bufferToDataUri(buffer: ArrayBuffer, type: string) {
 
 export async function GET(
     request: Request,
-    { params }: { params: { imageId: string; text: string } },
+    { params }: { params: Promise<{ imageId: string; text: string }> },
 ) {
     try {
         const { imageId, text: rawText } = await params;
