@@ -108,7 +108,7 @@ export default function Home() {
                     }}
                 >
                     <a
-                        href="https://github.com/你的用户名/你的仓库名"
+                        href="https://github.com/yige233/NatsumeAnnSays"
                         target="_blank"
                     >
                         View on GitHub
