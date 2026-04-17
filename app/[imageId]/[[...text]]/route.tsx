@@ -1,36 +1,8 @@
 import { ImageResponse } from "@vercel/og";
 import { NextRequest } from "next/server";
-import { get } from "@vercel/edge-config"; // 直接引用
+import { get } from "@vercel/edge-config";
 
 export const runtime = "edge";
-
-// 1. 模板配置
-const TEMPLATES: Record<
-  string,
-  {
-    filename: string;
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-    defaultAlign?: "left" | "center" | "right";
-    defaultColor?: string;
-    maxFs: number;
-    minFs: number;
-  }
-> = {
-  NatsumeAnn: {
-    filename: "NatsumeAnn.png",
-    x: 120,
-    y: 290,
-    w: 160,
-    h: 100,
-    defaultAlign: "center",
-    defaultColor: "000000",
-    maxFs: 30,
-    minFs: 8,
-  },
-};
 
 // --- 工具函数 ---
 
@@ -98,11 +70,16 @@ function getLayout(text: string, maxWidth: number, maxHeight: number, manualFs?:
 
 export async function GET(request: NextRequest, context: { params: Promise<{ imageId: string; text: string }> }) {
   try {
-    const { imageId, text: textArray } = await context.params;
+    const url = new URL(request.url);
+    const segments = url.pathname.split("/").filter(Boolean);
+    const imageId = segments[0];
+
+    const textFromPath = segments.slice(1).join("/") || null;
+
     const templates = await get<Record<string, any>>("templates");
     const template = templates?.[imageId];
-    if (!template) return new Response(`Template Not Found. Available: ${[...Object.keys(TEMPLATES)].join(",")}`, { status: 404 });
-    const rawText = (textArray?.[0] ? decodeURIComponent(textArray[0]) : template.defaultText || imageId).replace(/\||\/n/g, "\n");
+    if (!template) return new Response(`Template Not Found. Available: ${[...Object.keys(templates ?? {})].join(",")}`, { status: 404 });
+    const rawText = (textFromPath ? decodeURIComponent(textFromPath) : template.defaultText || imageId).replace(/\||\/n/g, "\n");
     const { searchParams } = new URL(request.url);
     const color = (searchParams.get("c") || template.defaultColor || "000000").replace("#", "");
     const align = (searchParams.get("al") || template.defaultAlign || "center") as "left" | "center" | "right";
